@@ -25,7 +25,7 @@ const {
 
 const bot = new Telegraf(process.env.BOT_TOKEN);
 bot.use(session());
-
+import { startInternalCron } from './internalCron.js';
 function normalize(s) {
   return (s || '').trim().toLowerCase();
 }
@@ -200,6 +200,7 @@ bot.on('text', async (ctx) => {
 });
 
 bot.launch().then(() => console.log('Bot started'));
+startInternalCron(bot);
 
 process.once('SIGINT', () => bot.stop('SIGINT'));
 process.once('SIGTERM', () => bot.stop('SIGTERM'));
