@@ -7,7 +7,8 @@ const {
   setTone,
   setSubscribed,
   setFreeMode,
-  incHeavyEvenings
+  incHeavyEvenings,
+  startTrial
 } = require('./db');
 
 const {
@@ -23,9 +24,25 @@ const {
   handleSupportMomentText
 } = require('./supportMoment');
 
+const { startInternalCron } = require('./internalCron');
+
+if (!process.env.BOT_TOKEN) {
+  throw new Error('BOT_TOKEN is missing');
+}
+
 const bot = new Telegraf(process.env.BOT_TOKEN);
 bot.use(session());
-import { startInternalCron } from './internalCron.js';
+
+// Ловим любые необработанные ошибки Telegraf (очень важно для стабильности)
+bot.catch((err, ctx) => {
+  console.error('Telegraf error:', err);
+  try {
+    if (ctx && ctx.chat && ctx.chat.id) {
+      // не спамим пользователю деталями, только логируем
+    }
+  } catch (_) {}
+});
+
 function normalize(s) {
   return (s || '').trim().toLowerCase();
 }
@@ -84,7 +101,10 @@ bot.start(async (ctx) => {
 
 bot.action('TRY_3DAYS', async (ctx) => {
   try { await ctx.answerCbQuery(); } catch (_) {}
-  await ensureUser(ctx);
+  const user = await ensureUser(ctx);
+  // важно: стартуем триал с этого момента (а не только при первом касании)
+  startTrial(user.user_id);
+
   await ctx.reply(
     'Ок.\n3 дня я буду рядом утром и вечером.\nБез давления.\nЕсли нужно прямо сейчас — нажми «Поддержка в моменте».',
     mainMenu
@@ -151,7 +171,6 @@ bot.hears('🧷 Поддержка в моменте', async (ctx) => {
   await enterSupportMoment(ctx, user.tone || 'soft');
 });
 
-// опциональная команда
 bot.command('support', async (ctx) => {
   const user = await ensureUser(ctx);
   await enterSupportMoment(ctx, user.tone || 'soft');
@@ -199,8 +218,18 @@ bot.on('text', async (ctx) => {
   await ctx.reply('Я здесь.\nЕсли нужно прямо сейчас — «Поддержка в моменте».\nИли просто молчим рядом.', mainMenu);
 });
 
-bot.launch().then(() => console.log('Bot started'));
-startInternalCron(bot);
+bot.launch()
+  .then(() => console.log('Bot started'))
+  .catch((e) => {
+    console.error('Bot launch failed:', e);
+    process.exit(1);
+  });
+
+// ВАЖНО: чтобы не было двойных отправок,
+// internal cron включаем только если ты явно этого хочешь.
+if (process.env.INTERNAL_CRON === '1') {
+  startInternalCron(bot);
+}
 
 process.once('SIGINT', () => bot.stop('SIGINT'));
 process.once('SIGTERM', () => bot.stop('SIGTERM'));
