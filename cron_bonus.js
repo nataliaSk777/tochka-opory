@@ -1,9 +1,6 @@
 require('dotenv').config();
-const { Telegraf } = require('telegraf');
 const { listActiveUsers, addDelivery, getDeliveredMsgIds } = require('./db');
 const { BONUS, applyTone, pickUndelivered } = require('./content');
-
-const bot = new Telegraf(process.env.BOT_TOKEN);
 
 const BONUS_PROBABILITY = Number(process.env.BONUS_PROBABILITY || 0.2);
 const COOLDOWN_DAYS = 1;
@@ -12,14 +9,13 @@ function shouldSend() {
   return Math.random() <= BONUS_PROBABILITY;
 }
 
-async function sendBonus() {
+async function sendBonus(bot) {
   const users = listActiveUsers();
 
   for (const u of users) {
     if (!u.subscribed) continue;
     if (!shouldSend()) continue;
 
-    // не чаще 1 бонуса/сутки
     const deliveredLastDay = getDeliveredMsgIds(u.user_id, 'bonus', COOLDOWN_DAYS);
     if (deliveredLastDay.size > 0) continue;
 
@@ -36,9 +32,4 @@ async function sendBonus() {
   }
 }
 
-sendBonus()
-  .then(() => process.exit(0))
-  .catch((e) => {
-    console.error(e);
-    process.exit(1);
-  });
+module.exports = { sendBonus };
