@@ -8,8 +8,17 @@ const {
   setSubscribed,
   setFreeMode,
   incHeavyEvenings,
-  startTrial
+  startTrial,
+  addDelivery,
+  getDeliveredMsgIds
 } = require('./db');
+
+const {
+  MORNING,
+  EVENING,
+  applyTone,
+  pickUndelivered
+} = require('./content');
 
 const {
   mainMenu,
@@ -174,6 +183,40 @@ bot.hears('🧷 Поддержка в моменте', async (ctx) => {
 bot.command('support', async (ctx) => {
   const user = await ensureUser(ctx);
   await enterSupportMoment(ctx, user.tone || 'soft');
+});
+
+// ✅ КНОПКА: 🌅 Утро — выдаёт реальный текст из content.js
+bot.hears('🌅 Утро', async (ctx) => {
+  const user = await ensureUser(ctx);
+
+  const delivered = getDeliveredMsgIds(user.user_id, 'morning', 120);
+  const picked = pickUndelivered(MORNING, delivered);
+  const text = applyTone(picked.text, user.tone);
+
+  try {
+    await ctx.reply(text, mainMenu);
+    addDelivery(user.user_id, 'morning', picked.id);
+  } catch (e) {
+    console.log('Manual MORNING failed', user.user_id, e.message);
+    await ctx.reply('Я рядом.\nСейчас что-то не отправилось.\nПопробуй ещё раз.', mainMenu);
+  }
+});
+
+// ✅ КНОПКА: 🌙 Вечер — выдаёт реальный текст из content.js
+bot.hears('🌙 Вечер', async (ctx) => {
+  const user = await ensureUser(ctx);
+
+  const delivered = getDeliveredMsgIds(user.user_id, 'evening', 120);
+  const picked = pickUndelivered(EVENING, delivered);
+  const text = applyTone(picked.text, user.tone);
+
+  try {
+    await ctx.reply(text, mainMenu);
+    addDelivery(user.user_id, 'evening', picked.id);
+  } catch (e) {
+    console.log('Manual EVENING failed', user.user_id, e.message);
+    await ctx.reply('Я рядом.\nСейчас что-то не отправилось.\nПопробуй ещё раз.', mainMenu);
+  }
 });
 
 // callback-обработчик сценария (раньше общего)
