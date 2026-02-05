@@ -27,6 +27,10 @@ const paywallMenu = Markup.inlineKeyboard([
   [Markup.button.callback('Оформить подписку', 'SUBSCRIBE_YES')],
   [Markup.button.callback('Остаться без подписки', 'SUBSCRIBE_NO')]
 ]);
+const channelLinkMenu = Markup.inlineKeyboard([
+  Markup.button.url('📖 Почитать точки опоры', 'https://t.me/tochka_opory_dlia_tebia')
+]);
+
 
 // 🧷 Поддержка в моменте — вход
 const supportMomentEntryMenu = Markup.inlineKeyboard([
@@ -51,5 +55,6 @@ module.exports = {
   toneMenu,
   paywallMenu,
   supportMomentEntryMenu,
-  supportMomentLabelMenu
+  supportMomentLabelMenu,
+  channelLinkMenu
 };
