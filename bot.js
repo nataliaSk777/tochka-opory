@@ -24,7 +24,8 @@ const {
   mainMenu,
   startMenu,
   toneMenu,
-  paywallMenu
+  paywallMenu,
+  channelLinkMenu
 } = require('./ui');
 
 const {
