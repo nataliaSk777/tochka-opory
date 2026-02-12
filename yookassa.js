@@ -1,3 +1,4 @@
+require('dotenv').config();
 const https = require('https');
 const crypto = require('crypto');
 
@@ -7,23 +8,37 @@ function mustEnv(name) {
   return v;
 }
 
-function ykRequest(method, path, bodyObj) {
+function parseRubAmount(raw) {
+  // принимает "490", "490 ₽", "490.00", "490,00" -> 490
+  const s = String(raw ?? '').trim();
+  const digits = s.replace(/[^\d]/g, '');
+  const n = Number(digits || '490');
+  if (!Number.isFinite(n) || n <= 0) throw new Error('PRICE_RUB must be a positive number');
+  return n;
+}
+
+function ykRequest(method, path, bodyObj, extraHeaders = {}) {
   const shopId = mustEnv('YOOKASSA_SHOP_ID');
   const secretKey = mustEnv('YOOKASSA_SECRET_KEY');
 
   const body = bodyObj ? JSON.stringify(bodyObj) : '';
   const auth = Buffer.from(`${shopId}:${secretKey}`).toString('base64');
 
+  const headers = {
+    'Authorization': `Basic ${auth}`,
+    'Content-Type': 'application/json',
+    ...extraHeaders
+  };
+
+  // Content-Length нужен только если реально отправляем body
+  if (body) headers['Content-Length'] = Buffer.byteLength(body);
+
   const options = {
     hostname: 'api.yookassa.ru',
     port: 443,
     path,
     method,
-    headers: {
-      'Authorization': `Basic ${auth}`,
-      'Content-Type': 'application/json',
-      'Content-Length': Buffer.byteLength(body)
-    }
+    headers
   };
 
   return new Promise((resolve, reject) => {
@@ -55,9 +70,7 @@ function makeIdempotenceKey(userId) {
 }
 
 async function createSubscriptionPayment({ userId, returnUrl }) {
-  const amount = Number(process.env.PRICE_RUB || '490');
-  if (!Number.isFinite(amount) || amount <= 0) throw new Error('PRICE_RUB must be a positive number');
-
+  const amount = parseRubAmount(process.env.PRICE_RUB || '490');
   const idempotenceKey = makeIdempotenceKey(userId);
 
   const payload = {
@@ -76,49 +89,9 @@ async function createSubscriptionPayment({ userId, returnUrl }) {
     }
   };
 
-  // idempotence-key у ЮKassa передаётся заголовком, но через голый https.request удобнее встроить в path нельзя.
-  // Поэтому делаем отдельную реализацию с заголовком:
-  return createPaymentWithIdempotence(payload, idempotenceKey);
-}
-
-function createPaymentWithIdempotence(payload, idempotenceKey) {
-  const shopId = mustEnv('YOOKASSA_SHOP_ID');
-  const secretKey = mustEnv('YOOKASSA_SECRET_KEY');
-  const body = JSON.stringify(payload);
-  const auth = Buffer.from(`${shopId}:${secretKey}`).toString('base64');
-
-  const options = {
-    hostname: 'api.yookassa.ru',
-    port: 443,
-    path: '/v3/payments',
-    method: 'POST',
-    headers: {
-      'Authorization': `Basic ${auth}`,
-      'Content-Type': 'application/json',
-      'Idempotence-Key': idempotenceKey,
-      'Content-Length': Buffer.byteLength(body)
-    }
-  };
-
-  return new Promise((resolve, reject) => {
-    const req = https.request(options, (res) => {
-      let data = '';
-      res.on('data', (chunk) => (data += chunk));
-      res.on('end', () => {
-        let parsed = null;
-        try { parsed = data ? JSON.parse(data) : null; } catch (_) {}
-        if (res.statusCode >= 200 && res.statusCode < 300) {
-          resolve(parsed);
-        } else {
-          const msg = parsed && parsed.description ? parsed.description : data;
-          reject(new Error(`YooKassa API error ${res.statusCode}: ${msg}`));
-        }
-      });
-    });
-    req.on('error', reject);
-    req.write(body);
-    req.end();
-  });
+  // Idempotence-Key — заголовок
+  const r = await ykRequest('POST', '/v3/payments', payload, { 'Idempotence-Key': idempotenceKey });
+  return r.data;
 }
 
 async function getPayment(paymentId) {
@@ -126,13 +99,9 @@ async function getPayment(paymentId) {
   return r.data;
 }
 
-// Истина, если платёж точно оплачен и захвачен
 function isPaid(payment) {
   if (!payment) return false;
-  // у ЮKassa: status = succeeded при успешной оплате, paid=true
-  if (payment.status === 'succeeded') return true;
-  if (payment.paid === true && payment.status === 'succeeded') return true;
-  return false;
+  return payment.status === 'succeeded';
 }
 
 module.exports = {
