@@ -7,11 +7,11 @@ db.exec(`
 CREATE TABLE IF NOT EXISTS users (
   user_id INTEGER PRIMARY KEY,
   first_name TEXT,
-  tone TEXT DEFAULT 'soft',          -- soft | brave | neutral
-  trial_start INTEGER,               -- unix ms
-  subscribed INTEGER DEFAULT 0,       -- 0/1
-  free_mode TEXT DEFAULT 'morning',   -- morning | evening
-  heavy_evenings INTEGER DEFAULT 0,   -- micro-memory
+  tone TEXT DEFAULT 'soft',
+  trial_start INTEGER,
+  subscribed INTEGER DEFAULT 0,
+  free_mode TEXT DEFAULT 'morning',
+  heavy_evenings INTEGER DEFAULT 0,
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL
 );
@@ -19,12 +19,25 @@ CREATE TABLE IF NOT EXISTS users (
 CREATE TABLE IF NOT EXISTS deliveries (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   user_id INTEGER NOT NULL,
-  slot TEXT NOT NULL,                -- morning | evening | bonus
-  msg_id TEXT NOT NULL,              -- identifier from library
+  slot TEXT NOT NULL,
+  msg_id TEXT NOT NULL,
   delivered_at INTEGER NOT NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_deliveries_user_slot ON deliveries(user_id, slot, delivered_at);
+
+CREATE TABLE IF NOT EXISTS payments (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL,
+  yk_payment_id TEXT NOT NULL UNIQUE,
+  status TEXT NOT NULL,
+  amount_value TEXT NOT NULL,
+  amount_currency TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_payments_user ON payments(user_id);
 `);
 
 function now() { return Date.now(); }
@@ -67,6 +80,11 @@ function incHeavyEvenings(user_id) {
     .run(now(), user_id);
 }
 
+function startTrial(user_id) {
+  db.prepare('UPDATE users SET trial_start=?, updated_at=? WHERE user_id=?')
+    .run(now(), now(), user_id);
+}
+
 function addDelivery(user_id, slot, msg_id) {
   db.prepare(`
     INSERT INTO deliveries (user_id, slot, msg_id, delivered_at)
@@ -87,6 +105,31 @@ function listActiveUsers() {
   return db.prepare('SELECT * FROM users').all();
 }
 
+/* =========================
+   Payments helpers
+========================= */
+
+function upsertPayment({ user_id, yk_payment_id, status, amount_value, amount_currency }) {
+  const ts = now();
+  const row = db.prepare('SELECT id FROM payments WHERE yk_payment_id=?').get(yk_payment_id);
+  if (row) {
+    db.prepare(`
+      UPDATE payments
+      SET user_id=?, status=?, amount_value=?, amount_currency=?, updated_at=?
+      WHERE yk_payment_id=?
+    `).run(user_id, status, amount_value, amount_currency, ts, yk_payment_id);
+  } else {
+    db.prepare(`
+      INSERT INTO payments (user_id, yk_payment_id, status, amount_value, amount_currency, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run(user_id, yk_payment_id, status, amount_value, amount_currency, ts, ts);
+  }
+}
+
+function getPaymentByYkId(yk_payment_id) {
+  return db.prepare('SELECT * FROM payments WHERE yk_payment_id=?').get(yk_payment_id);
+}
+
 module.exports = {
   db,
   upsertUser,
@@ -95,7 +138,10 @@ module.exports = {
   setSubscribed,
   setFreeMode,
   incHeavyEvenings,
+  startTrial,
   addDelivery,
   getDeliveredMsgIds,
-  listActiveUsers
+  listActiveUsers,
+  upsertPayment,
+  getPaymentByYkId
 };
