@@ -9,9 +9,10 @@
     "cron:evening": "node cron_evening.js",
     "cron:bonus": "node cron_bonus.js"
   },
- "engines": {
-  "node": "18.x"
-}
+  "engines": {
+    "node": "18.x",
+    "npm": "10.x"
+  },
   "packageManager": "npm@10.8.2",
   "dependencies": {
     "better-sqlite3": "^9.6.0",
