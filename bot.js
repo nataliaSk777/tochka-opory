@@ -40,6 +40,18 @@ const { createSubscriptionPayment } = require('./yookassa');
 
 if (!process.env.BOT_TOKEN) throw new Error('BOT_TOKEN is missing');
 
+// ✅ Безопасная диагностика ENV (не печатает секрет)
+console.log('ENV CHECK:', {
+  BOT_TOKEN: process.env.BOT_TOKEN ? 'OK' : 'MISSING',
+  PUBLIC_BASE_URL: process.env.PUBLIC_BASE_URL ? String(process.env.PUBLIC_BASE_URL).trim() : 'MISSING',
+  PRICE_RUB: process.env.PRICE_RUB ? String(process.env.PRICE_RUB).trim() : 'DEFAULT(490)',
+  YOOKASSA_SHOP_ID: process.env.YOOKASSA_SHOP_ID ? 'OK' : 'MISSING',
+  YOOKASSA_SECRET_KEY: process.env.YOOKASSA_SECRET_KEY
+    ? `OK(len=${String(process.env.YOOKASSA_SECRET_KEY).trim().length})`
+    : 'MISSING',
+  INTERNAL_CRON: process.env.INTERNAL_CRON ? String(process.env.INTERNAL_CRON).trim() : '0'
+});
+
 const bot = new Telegraf(process.env.BOT_TOKEN);
 bot.use(session());
 
@@ -358,13 +370,19 @@ bot.action('SUBSCRIBE_YES', async (ctx) => {
   try { await ctx.answerCbQuery(); } catch (_) {}
   const user = await ensureUser(ctx);
 
-  const base = String(process.env.PUBLIC_BASE_URL || '').trim().replace(/\/+$/, '');
+  // ✅ Нормализуем PUBLIC_BASE_URL: добавим https:// если забыли
+  let base = String(process.env.PUBLIC_BASE_URL || '').trim().replace(/\/+$/, '');
   if (!base) {
-    await ctx.reply('Похоже, не настроен PUBLIC_BASE_URL.\nНужно сгенерировать публичный домен в Railway и вставить его.', mainMenu);
+    await ctx.reply(
+      'Похоже, не настроен PUBLIC_BASE_URL.\nНужно сгенерировать публичный домен в Railway и вставить его.',
+      mainMenu
+    );
     return;
   }
+  if (!/^https?:\/\//i.test(base)) base = `https://${base}`;
 
   const returnUrl = `${base}/paid`;
+
   try {
     const payment = await createSubscriptionPayment({ userId: user.user_id, returnUrl });
 
@@ -381,7 +399,7 @@ bot.action('SUBSCRIBE_YES', async (ctx) => {
 
     await ctx.reply(
       [
-        'Ок. Вот ссылка на оплату подписки (490 ₽/мес):',
+        `Ок. Вот ссылка на оплату подписки (${Number(process.env.PRICE_RUB || '490')} ₽/мес):`,
         confirmUrl,
         '',
         'После оплаты я включу утро + вечер автоматически ✅'
@@ -389,8 +407,19 @@ bot.action('SUBSCRIBE_YES', async (ctx) => {
       mainMenu
     );
   } catch (e) {
-    console.log('Create payment failed', e.message);
-    await ctx.reply('Не получилось создать платёж. Проверь YOOKASSA_SHOP_ID / YOOKASSA_SECRET_KEY и попробуй ещё раз.', mainMenu);
+    // ✅ честная диагностика: статус + тело (если есть)
+    console.log('Create payment failed', {
+      message: e?.message,
+      status: e?.status,
+      data: e?.data
+    });
+
+    const hint =
+      e?.status === 401 ? '401: ключи YooKassa не приняты (YOOKASSA_SHOP_ID/YOOKASSA_SECRET_KEY).' :
+      e?.status === 400 ? '400: ошибка параметров платежа (часто return_url или amount).' :
+      'Техническая ошибка при создании платежа.';
+
+    await ctx.reply(`Не получилось создать платёж.\n${hint}`, mainMenu);
   }
 });
 
