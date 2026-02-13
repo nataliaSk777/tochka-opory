@@ -5,7 +5,7 @@ const { sendEvening } = require('./cron_evening');
 const { sendBonus } = require('./cron_bonus');
 
 function startInternalCron(bot) {
-  const timezone = process.env.TZ || 'Europe/Vilnius';
+  const timezone = process.env.TZ || 'Europe/Moscow';
 
   console.log('⏰ Internal cron is starting.');
   console.log('⏰ TZ =', timezone);
