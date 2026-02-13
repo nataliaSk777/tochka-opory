@@ -10,25 +10,31 @@ function mustEnv(name) {
   return String(v).trim();
 }
 
+function mustIntEnv(name) {
+  const v = mustEnv(name);
+  const n = Number(String(v).trim());
+  if (!Number.isFinite(n) || !Number.isInteger(n) || n < 0) {
+    throw new Error(`${name} must be a non-negative integer`);
+  }
+  return n;
+}
+
 function parseRubAmount(raw) {
-  // принимает "490", "490 ₽", "490.00", "490,00" -> 490 (Number)
   const s = String(raw ?? '').trim();
-
-  // оставляем цифры, точку и запятую; запятую считаем десятичным разделителем
-  const cleaned = s
-    .replace(/[^\d.,]/g, '')
-    .replace(',', '.');
-
-  // если внезапно получилось "490.00.1" — берём первую валидную часть
+  const cleaned = s.replace(/[^\d.,]/g, '').replace(',', '.');
   const match = cleaned.match(/^\d+(\.\d{1,2})?/);
   const num = match ? Number(match[0]) : NaN;
 
   if (!Number.isFinite(num) || num <= 0) {
     throw new Error('PRICE_RUB must be a positive number');
   }
-
-  // YooKassa ждёт строку с 2 знаками, но нам удобно хранить Number
   return Math.round(num * 100) / 100;
+}
+
+function makeIdempotenceKey(userId) {
+  return crypto.createHash('sha256')
+    .update(`${userId}:${Date.now()}:${Math.random()}`)
+    .digest('hex');
 }
 
 function ykRequest(method, path, bodyObj, extraHeaders = {}) {
@@ -90,15 +96,34 @@ function ykRequest(method, path, bodyObj, extraHeaders = {}) {
   });
 }
 
-function makeIdempotenceKey(userId) {
-  return crypto.createHash('sha256')
-    .update(`${userId}:${Date.now()}:${Math.random()}`)
-    .digest('hex');
+function normalizeEmail(s) {
+  return String(s || '').trim().toLowerCase();
 }
 
-async function createSubscriptionPayment({ userId, returnUrl }) {
+function isValidEmail(email) {
+  const e = normalizeEmail(email);
+  if (e.length < 6 || e.length > 254) return false;
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e);
+}
+
+async function createSubscriptionPayment({ userId, returnUrl, customerEmail }) {
   const amount = parseRubAmount(process.env.PRICE_RUB || '490');
   const idempotenceKey = makeIdempotenceKey(userId);
+
+  const email = normalizeEmail(customerEmail);
+  if (!isValidEmail(email)) {
+    const err = new Error('Customer email is required for receipt (54-FZ)');
+    err.status = 400;
+    err.data = { message: 'invalid_customer_email' };
+    throw err;
+  }
+
+  // 54-ФЗ: эти поля ОБЯЗАТЕЛЬНЫ, если в магазине включены чеки.
+  // TAX_SYSTEM_CODE: 1 ОСН, 2 УСН доход, 3 УСН доход-расход, 4 ЕНВД, 5 ЕСХН, 6 ПСН
+  const taxSystemCode = mustIntEnv('TAX_SYSTEM_CODE');
+
+  // VAT_CODE: 1 без НДС, 2 0%, 3 10%, 4 20%, 5 10/110, 6 20/120
+  const vatCode = mustIntEnv('VAT_CODE');
 
   const payload = {
     amount: {
@@ -113,6 +138,25 @@ async function createSubscriptionPayment({ userId, returnUrl }) {
     description: 'Подписка «Точка опоры» на 1 месяц',
     metadata: {
       user_id: String(userId)
+    },
+    receipt: {
+      customer: {
+        email
+      },
+      tax_system_code: taxSystemCode,
+      items: [
+        {
+          description: 'Подписка «Точка опоры» (1 месяц)',
+          quantity: '1.00',
+          amount: {
+            value: amount.toFixed(2),
+            currency: 'RUB'
+          },
+          vat_code: vatCode,
+          payment_subject: 'service',
+          payment_mode: 'full_payment'
+        }
+      ]
     }
   };
 
@@ -133,5 +177,6 @@ function isPaid(payment) {
 module.exports = {
   createSubscriptionPayment,
   getPayment,
-  isPaid
+  isPaid,
+  isValidEmail
 };
