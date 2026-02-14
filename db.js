@@ -42,6 +42,7 @@ CREATE INDEX IF NOT EXISTS idx_payments_user_status_created ON payments(user_id,
 `);
 
 function now() { return Date.now(); }
+function daysToMs(days) { return Number(days) * 24 * 60 * 60 * 1000; }
 
 function upsertUser({ user_id, first_name }) {
   const ts = now();
@@ -94,7 +95,7 @@ function addDelivery(user_id, slot, msg_id) {
 }
 
 function getDeliveredMsgIds(user_id, slot, limitDays = 60) {
-  const since = now() - limitDays * 24 * 60 * 60 * 1000;
+  const since = now() - daysToMs(limitDays);
   const rows = db.prepare(`
     SELECT msg_id FROM deliveries
     WHERE user_id=? AND slot=? AND delivered_at>=?
@@ -110,19 +111,20 @@ function listActiveUsers() {
    Payments helpers
 ========================= */
 
-/**
- * ВАЖНО:
- * created_at в таблице payments — это время платежа (берём из YooKassa payment.created_at).
- * updated_at — время, когда мы обновили запись в нашей БД.
- */
-function upsertPayment({ user_id, yk_payment_id, status, amount_value, amount_currency, created_at }) {
+// ✅ Важно: принимаем created_at (время платежа от YooKassa), чтобы считать “до …”
+function upsertPayment({
+  user_id,
+  yk_payment_id,
+  status,
+  amount_value,
+  amount_currency,
+  created_at
+}) {
   const ts = now();
-  const paymentCreatedAt = Number.isFinite(Number(created_at)) ? Number(created_at) : ts;
+  const createdAt = Number.isFinite(Number(created_at)) ? Number(created_at) : ts;
 
-  const row = db.prepare('SELECT id, created_at FROM payments WHERE yk_payment_id=?').get(yk_payment_id);
-
+  const row = db.prepare('SELECT id FROM payments WHERE yk_payment_id=?').get(yk_payment_id);
   if (row) {
-    // не перетираем created_at на "сейчас", чтобы не ломать логику подписки по сроку
     db.prepare(`
       UPDATE payments
       SET user_id=?, status=?, amount_value=?, amount_currency=?, updated_at=?
@@ -132,7 +134,7 @@ function upsertPayment({ user_id, yk_payment_id, status, amount_value, amount_cu
     db.prepare(`
       INSERT INTO payments (user_id, yk_payment_id, status, amount_value, amount_currency, created_at, updated_at)
       VALUES (?, ?, ?, ?, ?, ?, ?)
-    `).run(user_id, yk_payment_id, status, amount_value, amount_currency, paymentCreatedAt, ts);
+    `).run(user_id, yk_payment_id, status, amount_value, amount_currency, createdAt, ts);
   }
 }
 
@@ -140,27 +142,30 @@ function getPaymentByYkId(yk_payment_id) {
   return db.prepare('SELECT * FROM payments WHERE yk_payment_id=?').get(yk_payment_id);
 }
 
-/**
- * ✅ Вариант А:
- * Подписка активна, если есть succeeded за последние N дней.
- */
-function isSubscriptionActive(user_id, days = 30) {
-  const uid = Number(user_id);
-  if (!Number.isFinite(uid) || uid <= 0) return false;
-
-  const since = now() - Number(days) * 24 * 60 * 60 * 1000;
-
-  const row = db.prepare(`
-    SELECT 1 AS ok
-    FROM payments
-    WHERE user_id = ?
-      AND status = 'succeeded'
-      AND created_at >= ?
+// ✅ Последний успешный платеж пользователя
+function getLastSucceededPayment(user_id) {
+  return db.prepare(`
+    SELECT * FROM payments
+    WHERE user_id=? AND status='succeeded'
     ORDER BY created_at DESC
     LIMIT 1
-  `).get(uid, since);
+  `).get(user_id);
+}
 
-  return !!(row && row.ok === 1);
+// ✅ До какого времени активна подписка (ms). null если нет
+function getSubscriptionUntilMs(user_id, periodDays = 30) {
+  const p = getLastSucceededPayment(user_id);
+  if (!p) return null;
+  const start = Number(p.created_at);
+  if (!Number.isFinite(start) || start <= 0) return null;
+  return start + daysToMs(periodDays);
+}
+
+// ✅ Активна ли подписка сейчас
+function isSubscriptionActive(user_id, periodDays = 30) {
+  const until = getSubscriptionUntilMs(user_id, periodDays);
+  if (!until) return false;
+  return now() < until;
 }
 
 module.exports = {
@@ -177,5 +182,7 @@ module.exports = {
   listActiveUsers,
   upsertPayment,
   getPaymentByYkId,
+  getLastSucceededPayment,
+  getSubscriptionUntilMs,
   isSubscriptionActive
 };
