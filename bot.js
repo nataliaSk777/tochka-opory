@@ -36,7 +36,7 @@ const {
 
 const { startInternalCron } = require('./internalCron');
 const { startServer } = require('./server');
-const { createSubscriptionPayment } = require('./yookassa');
+const { createSubscriptionPayment, isValidEmail } = require('./yookassa');
 
 if (!process.env.BOT_TOKEN) throw new Error('BOT_TOKEN is missing');
 
@@ -76,6 +76,11 @@ function ensureSession(ctx) {
   if (!ctx.session) ctx.session = {};
   if (!ctx.session.guided) ctx.session.guided = { active: false, step: 0, paused: false, tmp: {} };
   return ctx.session.guided;
+}
+function ensurePaySession(ctx) {
+  if (!ctx.session) ctx.session = {};
+  if (!ctx.session.pay) ctx.session.pay = { awaitingEmail: false, email: '' };
+  return ctx.session.pay;
 }
 
 function resetGuided(ctx) {
@@ -381,10 +386,27 @@ bot.action('SUBSCRIBE_YES', async (ctx) => {
   }
   if (!/^https?:\/\//i.test(base)) base = `https://${base}`;
 
+  const pay = ensurePaySession(ctx);
+
+  // ✅ 54-ФЗ: нужен email для чека
+  if (!pay.email || !isValidEmail(pay.email)) {
+    pay.awaitingEmail = true;
+    pay.email = '';
+    await ctx.reply(
+      'Чтобы оформить подписку, мне нужен email для чека.\n\nНапиши email одним сообщением (например: name@gmail.com).',
+      mainMenu
+    );
+    return;
+  }
+
   const returnUrl = `${base}/paid`;
 
   try {
-    const payment = await createSubscriptionPayment({ userId: user.user_id, returnUrl });
+    const payment = await createSubscriptionPayment({
+      userId: user.user_id,
+      returnUrl,
+      customerEmail: pay.email
+    });
 
     const confirmUrl =
       payment && payment.confirmation && payment.confirmation.confirmation_url
@@ -407,7 +429,6 @@ bot.action('SUBSCRIBE_YES', async (ctx) => {
       mainMenu
     );
   } catch (e) {
-    // ✅ честная диагностика: статус + тело (если есть)
     console.log('Create payment failed', {
       message: e?.message,
       status: e?.status,
@@ -416,13 +437,12 @@ bot.action('SUBSCRIBE_YES', async (ctx) => {
 
     const hint =
       e?.status === 401 ? '401: ключи YooKassa не приняты (YOOKASSA_SHOP_ID/YOOKASSA_SECRET_KEY).' :
-      e?.status === 400 ? '400: ошибка параметров платежа (часто return_url или amount).' :
+      e?.status === 400 ? `400: ошибка параметров платежа. ${e?.data?.parameter ? `Параметр: ${e.data.parameter}.` : ''}` :
       'Техническая ошибка при создании платежа.';
 
     await ctx.reply(`Не получилось создать платёж.\n${hint}`, mainMenu);
   }
 });
-
 bot.action('SUBSCRIBE_NO', async (ctx) => {
   try { await ctx.answerCbQuery(); } catch (_) {}
   const user = await ensureUser(ctx);
@@ -564,6 +584,27 @@ bot.on('text', async (ctx, next) => {
 bot.on('text', async (ctx, next) => {
   const handled = await handleSupportMomentText(ctx);
   if (handled) return;
+  return next();
+});
+
+bot.on('text', async (ctx, next) => {
+  const pay = ensurePaySession(ctx);
+
+  if (pay.awaitingEmail) {
+    const email = String(ctx.message.text || '').trim();
+
+    if (!isValidEmail(email)) {
+      await ctx.reply('Похоже, это не email. Напиши, пожалуйста, в формате name@example.com', mainMenu);
+      return;
+    }
+
+    pay.email = email;
+    pay.awaitingEmail = false;
+
+    await ctx.reply('Принято ✅\nТеперь нажми «Оформить подписку» ещё раз — я создам платёж.', mainMenu);
+    return;
+  }
+
   return next();
 });
 
