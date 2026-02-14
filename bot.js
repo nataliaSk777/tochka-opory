@@ -78,11 +78,25 @@ function ensureSession(ctx) {
   if (!ctx.session.guided) ctx.session.guided = { active: false, step: 0, paused: false, tmp: {} };
   return ctx.session.guided;
 }
+
 function ensurePaySession(ctx) {
   if (!ctx.session) ctx.session = {};
   if (!ctx.session.pay) ctx.session.pay = { awaitingEmail: false, email: '' };
   return ctx.session.pay;
 }
+
+function resetPaySession(ctx) {
+  if (!ctx.session) ctx.session = {};
+  ctx.session.pay = { awaitingEmail: false, email: '' };
+}
+
+const payActionKeyboard = Markup.inlineKeyboard(
+  [
+    Markup.button.callback('✅ Создать подписку', 'SUBSCRIBE_CREATE'),
+    Markup.button.callback('✏️ Изменить email', 'SUBSCRIBE_EMAIL_EDIT')
+  ],
+  { columns: 1 }
+);
 
 function resetGuided(ctx) {
   if (!ctx.session) ctx.session = {};
@@ -314,73 +328,20 @@ function subText(user, active) {
 }
 
 /* ============================================================================
-   Start / menus
+   Payments helpers (BOT)
 ============================================================================ */
 
-bot.start(async (ctx) => {
-  await ensureUser(ctx);
-  resetGuided(ctx);
-  await ctx.reply(startText(), startMenu);
-  await ctx.reply('Меню рядом 👇', mainMenu);
-});
-
-bot.action('TRY_3DAYS', async (ctx) => {
-  try { await ctx.answerCbQuery(); } catch (_) {}
-  const user = await ensureUser(ctx);
-  startTrial(user.user_id);
-
-  await ctx.reply(
-    'Ок.\n3 дня я буду рядом утром и вечером.\nБез давления.\nЕсли нужно прямо сейчас — нажми «Поддержка в моменте».\nА если нужно шаг за шагом — /moment.',
-    mainMenu
-  );
-});
-
-bot.action('HOW_IT_WORKS', async (ctx) => {
-  try { await ctx.answerCbQuery(); } catch (_) {}
-  await ensureUser(ctx);
-  await ctx.reply(howText(), mainMenu);
-});
-
-bot.action('PICK_TONE', async (ctx) => {
-  try { await ctx.answerCbQuery(); } catch (_) {}
-  await ensureUser(ctx);
-  await ctx.reply('Как тебе лучше?', toneMenu);
-});
-
-bot.action(/TONE_(soft|brave|neutral)/, async (ctx) => {
-  try { await ctx.answerCbQuery(); } catch (_) {}
-  const tone = ctx.match[1];
-  const user = await ensureUser(ctx);
-  setTone(user.user_id, tone);
-  const map = { soft: '🌿 Очень мягко', brave: '🔥 Чуть бодрее', neutral: '🫧 Нейтрально' };
-  await ctx.reply(`Принято. Тон: ${map[tone]}.`, mainMenu);
-});
-
-bot.hears('🌿 Тон', async (ctx) => {
-  await ensureUser(ctx);
-  await ctx.reply('Как тебе лучше?', toneMenu);
-});
-
-bot.hears('ℹ️ Как это работает', async (ctx) => {
-  await ensureUser(ctx);
-  await ctx.reply(howText(), mainMenu);
-});
-
-bot.hears('🔒 Подписка', async (ctx) => {
-  const user = await ensureUser(ctx);
-  const active = isSubscriptionActive(user.user_id, 30);
-
-  // если активна — не показываем кнопки оплаты, чтобы не путать
-  await ctx.reply(subText(user, active), active ? mainMenu : paywallMenu);
-});
-
-// ✅ Тут — автомат: создаём платёж ЮKassa и отдаём ссылку
-bot.action('SUBSCRIBE_YES', async (ctx) => {
-  try { await ctx.answerCbQuery(); } catch (_) {}
-  const user = await ensureUser(ctx);
-
-  // ✅ Нормализуем PUBLIC_BASE_URL: добавим https:// если забыли
+function normalizeBaseUrl() {
   let base = String(process.env.PUBLIC_BASE_URL || '').trim().replace(/\/+$/, '');
+  if (!base) return '';
+  if (!/^https?:\/\//i.test(base)) base = `https://${base}`;
+  return base;
+}
+
+async function createPaymentAndSendLink(ctx, user) {
+  const pay = ensurePaySession(ctx);
+
+  const base = normalizeBaseUrl();
   if (!base) {
     await ctx.reply(
       'Похоже, не настроен PUBLIC_BASE_URL.\nНужно сгенерировать публичный домен в Railway и вставить его.',
@@ -388,11 +349,8 @@ bot.action('SUBSCRIBE_YES', async (ctx) => {
     );
     return;
   }
-  if (!/^https?:\/\//i.test(base)) base = `https://${base}`;
 
-  const pay = ensurePaySession(ctx);
-
-  // ✅ 54-ФЗ: нужен email для чека
+  // 54-ФЗ: нужен email
   if (!pay.email || !isValidEmail(pay.email)) {
     pay.awaitingEmail = true;
     pay.email = '';
@@ -446,7 +404,112 @@ bot.action('SUBSCRIBE_YES', async (ctx) => {
 
     await ctx.reply(`Не получилось создать платёж.\n${hint}`, mainMenu);
   }
+}
+
+/* ============================================================================
+   Start / menus
+============================================================================ */
+
+bot.start(async (ctx) => {
+  await ensureUser(ctx);
+  resetGuided(ctx);
+  resetPaySession(ctx);
+  await ctx.reply(startText(), startMenu);
+  await ctx.reply('Меню рядом 👇', mainMenu);
 });
+
+bot.action('TRY_3DAYS', async (ctx) => {
+  try { await ctx.answerCbQuery(); } catch (_) {}
+  const user = await ensureUser(ctx);
+  startTrial(user.user_id);
+
+  await ctx.reply(
+    'Ок.\n3 дня я буду рядом утром и вечером.\nБез давления.\nЕсли нужно прямо сейчас — нажми «Поддержка в моменте».\nА если нужно шаг за шагом — /moment.',
+    mainMenu
+  );
+});
+
+bot.action('HOW_IT_WORKS', async (ctx) => {
+  try { await ctx.answerCbQuery(); } catch (_) {}
+  await ensureUser(ctx);
+  await ctx.reply(howText(), mainMenu);
+});
+
+bot.action('PICK_TONE', async (ctx) => {
+  try { await ctx.answerCbQuery(); } catch (_) {}
+  await ensureUser(ctx);
+  await ctx.reply('Как тебе лучше?', toneMenu);
+});
+
+bot.action(/TONE_(soft|brave|neutral)/, async (ctx) => {
+  try { await ctx.answerCbQuery(); } catch (_) {}
+  const tone = ctx.match[1];
+  const user = await ensureUser(ctx);
+  setTone(user.user_id, tone);
+  const map = { soft: '🌿 Очень мягко', brave: '🔥 Чуть бодрее', neutral: '🫧 Нейтрально' };
+  await ctx.reply(`Принято. Тон: ${map[tone]}.`, mainMenu);
+});
+
+bot.hears('🌿 Тон', async (ctx) => {
+  await ensureUser(ctx);
+  await ctx.reply('Как тебе лучше?', toneMenu);
+});
+
+bot.hears('ℹ️ Как это работает', async (ctx) => {
+  await ensureUser(ctx);
+  await ctx.reply(howText(), mainMenu);
+});
+
+bot.hears('🔒 Подписка', async (ctx) => {
+  const user = await ensureUser(ctx);
+  const active = isSubscriptionActive(user.user_id, 30);
+  await ctx.reply(subText(user, active), active ? mainMenu : paywallMenu);
+});
+
+/* ============================================================================
+   Payments flow (PAYWALL)
+============================================================================ */
+
+// 1) Нажали “Оформить подписку” (из paywallMenu)
+bot.action('SUBSCRIBE_YES', async (ctx) => {
+  try { await ctx.answerCbQuery(); } catch (_) {}
+  const user = await ensureUser(ctx);
+
+  const pay = ensurePaySession(ctx);
+
+  // если email уже есть — создаём платёж сразу
+  if (pay.email && isValidEmail(pay.email)) {
+    await createPaymentAndSendLink(ctx, user);
+    return;
+  }
+
+  // иначе просим email
+  pay.awaitingEmail = true;
+  pay.email = '';
+  await ctx.reply(
+    'Чтобы оформить подписку, мне нужен email для чека.\n\nНапиши email одним сообщением (например: name@gmail.com).',
+    mainMenu
+  );
+});
+
+// 2) После ввода email пользователь жмёт “✅ Создать подписку” (inline)
+bot.action('SUBSCRIBE_CREATE', async (ctx) => {
+  try { await ctx.answerCbQuery(); } catch (_) {}
+  const user = await ensureUser(ctx);
+  await createPaymentAndSendLink(ctx, user);
+});
+
+// 3) “Изменить email” (inline)
+bot.action('SUBSCRIBE_EMAIL_EDIT', async (ctx) => {
+  try { await ctx.answerCbQuery(); } catch (_) {}
+  await ensureUser(ctx);
+
+  const pay = ensurePaySession(ctx);
+  pay.awaitingEmail = true;
+
+  await ctx.reply('Ок. Напиши email одним сообщением (например: name@gmail.com).', mainMenu);
+});
+
 bot.action('SUBSCRIBE_NO', async (ctx) => {
   try { await ctx.answerCbQuery(); } catch (_) {}
   const user = await ensureUser(ctx);
@@ -580,35 +643,37 @@ bot.on('callback_query', async (ctx, next) => {
 
 bot.on('text', async (ctx, next) => {
   await ensureUser(ctx);
-  const handled = await guidedHandleText(ctx);
-  if (handled) return;
-  return next();
-});
 
-bot.on('text', async (ctx, next) => {
-  const handled = await handleSupportMomentText(ctx);
-  if (handled) return;
-  return next();
-});
-
-bot.on('text', async (ctx, next) => {
+  // ✅ 54-ФЗ: ловим email, если его ждём
   const pay = ensurePaySession(ctx);
-
   if (pay.awaitingEmail) {
     const email = String(ctx.message.text || '').trim();
 
     if (!isValidEmail(email)) {
-      await ctx.reply('Похоже, это не email. Напиши, пожалуйста, в формате name@example.com', mainMenu);
+      await ctx.reply('Похоже, это не email.\nНапиши, пожалуйста, в формате name@example.com', mainMenu);
       return;
     }
 
     pay.email = email;
     pay.awaitingEmail = false;
 
-    await ctx.reply('Принято ✅\nТеперь нажми «Оформить подписку» ещё раз — я создам платёж.', mainMenu);
+    // ✅ Вот то самое: кнопка внизу сообщения
+    await ctx.reply(
+      'Принято ✅\nТеперь нажми «✅ Создать подписку» — я создам ссылку на оплату.',
+      payActionKeyboard
+    );
     return;
   }
 
+  const handled = await guidedHandleText(ctx);
+  if (handled) return;
+
+  return next();
+});
+
+bot.on('text', async (ctx, next) => {
+  const handled = await handleSupportMomentText(ctx);
+  if (handled) return;
   return next();
 });
 
