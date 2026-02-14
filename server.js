@@ -1,7 +1,7 @@
 const express = require('express');
 
 const { getPayment, isPaid } = require('./yookassa');
-const { setSubscribed, upsertPayment } = require('./db');
+const { setSubscribed, upsertPayment, getSubscriptionUntilMs } = require('./db');
 
 function startServer(bot) {
   const app = express();
@@ -23,7 +23,6 @@ function startServer(bot) {
   function markSeen(id) {
     const now = Date.now();
     seen.set(id, now);
-    // чистим старое
     for (const [k, ts] of seen.entries()) {
       if (now - ts > SEEN_TTL_MS) seen.delete(k);
     }
@@ -39,6 +38,15 @@ function startServer(bot) {
     return true;
   }
 
+  function formatUntilRu(ms) {
+    try {
+      const d = new Date(ms);
+      return d.toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit', year: 'numeric' });
+    } catch (_) {
+      return '';
+    }
+  }
+
   // Webhook from YooKassa
   app.post('/yookassa/webhook', async (req, res) => {
     try {
@@ -49,7 +57,6 @@ function startServer(bot) {
 
       console.log('[YK] webhook event=', event, 'paymentId=', paymentId);
 
-      // ✅ Обрабатываем только payment.* (остальное игнорируем)
       if (!event.startsWith('payment.')) {
         res.status(200).send('ok');
         return;
@@ -60,14 +67,13 @@ function startServer(bot) {
         return;
       }
 
-      // ✅ Быстрая защита от повторов
       if (isSeen(paymentId)) {
         res.status(200).send('ok');
         return;
       }
       markSeen(paymentId);
 
-      // ✅ Подтверждаем оплату НЕ по webhook-данным, а через API
+      // подтверждаем оплату через API
       const payment = await getPayment(paymentId);
 
       const userIdRaw = payment?.metadata?.user_id ? String(payment.metadata.user_id) : '';
@@ -83,13 +89,11 @@ function startServer(bot) {
       const amountCurrency = payment?.amount?.currency ? String(payment.amount.currency) : 'RUB';
       const status = payment?.status ? String(payment.status) : 'unknown';
 
-      // ✅ Время платежа (для варианта А — подписка “active by succeeded in last 30 days”)
       const createdAtMs =
         payment && payment.created_at
           ? Date.parse(String(payment.created_at))
           : Date.now();
 
-      // ✅ сохраняем/обновляем платеж в БД
       try {
         upsertPayment({
           user_id: userId,
@@ -104,19 +108,18 @@ function startServer(bot) {
       }
 
       if (isPaid(payment)) {
-        // можно оставить: флаг удобен, но UI теперь должен смотреть по payments (вариант А)
-        try {
-          setSubscribed(userId, true);
-        } catch (e) {
-          console.log('[YK] setSubscribed failed', userId, e?.message);
-        }
+        try { setSubscribed(userId, true); } catch (_) {}
 
-        // Пишем пользователю подтверждение
+        // ✅ “активна до …” (30 дней)
+        const untilMs = getSubscriptionUntilMs(userId, 30);
+        const untilStr = untilMs ? formatUntilRu(untilMs) : '';
+
+        const text = untilStr
+          ? `✅ Оплата получена.\nПодписка активна до ${untilStr}.\nУтро + вечер включены.\nЯ рядом.`
+          : '✅ Оплата получена.\nПодписка активна: утро + вечер.\nЯ рядом.';
+
         try {
-          await bot.telegram.sendMessage(
-            userId,
-            '✅ Оплата получена.\nПодписка активна: утро + вечер.\nЯ рядом.'
-          );
+          await bot.telegram.sendMessage(userId, text);
         } catch (e) {
           console.log('[YK] notify user failed', userId, e?.message);
         }
@@ -125,7 +128,6 @@ function startServer(bot) {
       res.status(200).send('ok');
     } catch (e) {
       console.error('[YK] webhook error', e?.message || e);
-      // ✅ 200, чтобы YooKassa не устроила шторм повторов
       res.status(200).send('ok');
     }
   });
