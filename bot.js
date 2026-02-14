@@ -10,7 +10,8 @@ const {
   incHeavyEvenings,
   startTrial,
   addDelivery,
-  getDeliveredMsgIds
+  getDeliveredMsgIds,
+  isSubscriptionActive
 } = require('./db');
 
 const {
@@ -295,9 +296,9 @@ function howText() {
   ].join('\n');
 }
 
-function subText(user) {
+function subText(user, active) {
   const price = `${Number(process.env.PRICE_RUB || '490')} ₽ в месяц`;
-  const mode = user.subscribed ? '✅ Подписка активна.' : '🔒 Подписка не активна.';
+  const mode = active ? '✅ Подписка активна.' : '🔒 Подписка не активна.';
   return [
     mode,
     '',
@@ -367,7 +368,10 @@ bot.hears('ℹ️ Как это работает', async (ctx) => {
 
 bot.hears('🔒 Подписка', async (ctx) => {
   const user = await ensureUser(ctx);
-  await ctx.reply(subText(user), paywallMenu);
+  const active = isSubscriptionActive(user.user_id, 30);
+
+  // если активна — не показываем кнопки оплаты, чтобы не путать
+  await ctx.reply(subText(user, active), active ? mainMenu : paywallMenu);
 });
 
 // ✅ Тут — автомат: создаём платёж ЮKassa и отдаём ссылку
