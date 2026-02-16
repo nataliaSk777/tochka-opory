@@ -1,3 +1,5 @@
+'use strict';
+
 require('dotenv').config();
 const { Telegraf, session, Markup } = require('telegraf');
 
@@ -39,18 +41,31 @@ const { startInternalCron } = require('./internalCron');
 const { startServer } = require('./server');
 const { createSubscriptionPayment, isValidEmail } = require('./yookassa');
 
+/* ============================================================================
+   ✅ Global safety & boot diagnostics
+============================================================================ */
+
+process.on('unhandledRejection', (e) => console.error('UNHANDLED_REJECTION:', e));
+process.on('uncaughtException', (e) => console.error('UNCAUGHT_EXCEPTION:', e));
+
 if (!process.env.BOT_TOKEN) throw new Error('BOT_TOKEN is missing');
 
+function safeStr(v) {
+  return (v == null) ? '' : String(v).trim();
+}
+
 // ✅ Безопасная диагностика ENV (не печатает секрет)
+console.log('BOOT:', new Date().toISOString());
 console.log('ENV CHECK:', {
   BOT_TOKEN: process.env.BOT_TOKEN ? 'OK' : 'MISSING',
-  PUBLIC_BASE_URL: process.env.PUBLIC_BASE_URL ? String(process.env.PUBLIC_BASE_URL).trim() : 'MISSING',
-  PRICE_RUB: process.env.PRICE_RUB ? String(process.env.PRICE_RUB).trim() : 'DEFAULT(490)',
+  PUBLIC_BASE_URL: safeStr(process.env.PUBLIC_BASE_URL) || 'MISSING',
+  PRICE_RUB: safeStr(process.env.PRICE_RUB) || 'DEFAULT(490)',
   YOOKASSA_SHOP_ID: process.env.YOOKASSA_SHOP_ID ? 'OK' : 'MISSING',
   YOOKASSA_SECRET_KEY: process.env.YOOKASSA_SECRET_KEY
-    ? `OK(len=${String(process.env.YOOKASSA_SECRET_KEY).trim().length})`
+    ? `OK(len=${safeStr(process.env.YOOKASSA_SECRET_KEY).length})`
     : 'MISSING',
-  INTERNAL_CRON: process.env.INTERNAL_CRON ? String(process.env.INTERNAL_CRON).trim() : '0'
+  INTERNAL_CRON: safeStr(process.env.INTERNAL_CRON) || '0',
+  PORT: safeStr(process.env.PORT) || 'DEFAULT(3000)'
 });
 
 const bot = new Telegraf(process.env.BOT_TOKEN);
@@ -60,13 +75,23 @@ bot.catch((err) => {
   console.error('Telegraf error:', err);
 });
 
+async function safeAnswerCbQuery(ctx) {
+  try { await ctx.answerCbQuery(); } catch (_) {}
+}
+
 function normalize(s) {
   return (s || '').trim().toLowerCase();
 }
 
 async function ensureUser(ctx) {
-  upsertUser({ user_id: ctx.from.id, first_name: ctx.from.first_name });
-  return getUser(ctx.from.id);
+  try {
+    upsertUser({ user_id: ctx.from.id, first_name: ctx.from.first_name });
+    return getUser(ctx.from.id);
+  } catch (e) {
+    console.error('ensureUser failed:', { message: e?.message });
+    // Не роняем бота, возвращаем минимальный объект
+    return { user_id: ctx.from?.id, first_name: ctx.from?.first_name, tone: 'soft' };
+  }
 }
 
 /* ============================================================================
@@ -419,7 +444,7 @@ bot.start(async (ctx) => {
 });
 
 bot.action('TRY_3DAYS', async (ctx) => {
-  try { await ctx.answerCbQuery(); } catch (_) {}
+  await safeAnswerCbQuery(ctx);
   const user = await ensureUser(ctx);
   startTrial(user.user_id);
 
@@ -430,19 +455,19 @@ bot.action('TRY_3DAYS', async (ctx) => {
 });
 
 bot.action('HOW_IT_WORKS', async (ctx) => {
-  try { await ctx.answerCbQuery(); } catch (_) {}
+  await safeAnswerCbQuery(ctx);
   await ensureUser(ctx);
   await ctx.reply(howText(), mainMenu);
 });
 
 bot.action('PICK_TONE', async (ctx) => {
-  try { await ctx.answerCbQuery(); } catch (_) {}
+  await safeAnswerCbQuery(ctx);
   await ensureUser(ctx);
   await ctx.reply('Как тебе лучше?', toneMenu);
 });
 
 bot.action(/TONE_(soft|brave|neutral)/, async (ctx) => {
-  try { await ctx.answerCbQuery(); } catch (_) {}
+  await safeAnswerCbQuery(ctx);
   const tone = ctx.match[1];
   const user = await ensureUser(ctx);
   setTone(user.user_id, tone);
@@ -470,20 +495,16 @@ bot.hears('🔒 Подписка', async (ctx) => {
    Payments flow (PAYWALL)
 ============================================================================ */
 
-// 1) Нажали “Оформить подписку” (из paywallMenu)
 bot.action('SUBSCRIBE_YES', async (ctx) => {
-  try { await ctx.answerCbQuery(); } catch (_) {}
+  await safeAnswerCbQuery(ctx);
   const user = await ensureUser(ctx);
-
   const pay = ensurePaySession(ctx);
 
-  // если email уже есть — создаём платёж сразу
   if (pay.email && isValidEmail(pay.email)) {
     await createPaymentAndSendLink(ctx, user);
     return;
   }
 
-  // иначе просим email
   pay.awaitingEmail = true;
   pay.email = '';
   await ctx.reply(
@@ -492,16 +513,14 @@ bot.action('SUBSCRIBE_YES', async (ctx) => {
   );
 });
 
-// 2) После ввода email пользователь жмёт “✅ Создать подписку” (inline)
 bot.action('SUBSCRIBE_CREATE', async (ctx) => {
-  try { await ctx.answerCbQuery(); } catch (_) {}
+  await safeAnswerCbQuery(ctx);
   const user = await ensureUser(ctx);
   await createPaymentAndSendLink(ctx, user);
 });
 
-// 3) “Изменить email” (inline)
 bot.action('SUBSCRIBE_EMAIL_EDIT', async (ctx) => {
-  try { await ctx.answerCbQuery(); } catch (_) {}
+  await safeAnswerCbQuery(ctx);
   await ensureUser(ctx);
 
   const pay = ensurePaySession(ctx);
@@ -511,7 +530,7 @@ bot.action('SUBSCRIBE_EMAIL_EDIT', async (ctx) => {
 });
 
 bot.action('SUBSCRIBE_NO', async (ctx) => {
-  try { await ctx.answerCbQuery(); } catch (_) {}
+  await safeAnswerCbQuery(ctx);
   const user = await ensureUser(ctx);
   setSubscribed(user.user_id, false);
   setFreeMode(user.user_id, 'morning');
@@ -568,7 +587,7 @@ bot.hears('🌅 Утро', async (ctx) => {
     await ctx.reply(text, mainMenu);
     addDelivery(user.user_id, 'morning', picked.id);
   } catch (e) {
-    console.log('Manual MORNING failed', user.user_id, e.message);
+    console.log('Manual MORNING failed', user.user_id, e?.message);
     await ctx.reply('Я рядом.\nСейчас что-то не отправилось.\nПопробуй ещё раз.', mainMenu);
   }
 });
@@ -583,20 +602,21 @@ bot.hears('🌙 Вечер', async (ctx) => {
     await ctx.reply(text, mainMenu);
     addDelivery(user.user_id, 'evening', picked.id);
   } catch (e) {
-    console.log('Manual EVENING failed', user.user_id, e.message);
+    console.log('Manual EVENING failed', user.user_id, e?.message);
     await ctx.reply('Я рядом.\nСейчас что-то не отправилось.\nПопробуй ещё раз.', mainMenu);
   }
 });
 
 /* ============================================================================
-   callback_query routing:
+   callback_query routing
 ============================================================================ */
 
 bot.on('callback_query', async (ctx, next) => {
   const data = ctx.callbackQuery && ctx.callbackQuery.data ? String(ctx.callbackQuery.data) : '';
 
+  // Guided moment callbacks
   if (data.startsWith('GM_')) {
-    try { await ctx.answerCbQuery(); } catch (_) {}
+    await safeAnswerCbQuery(ctx);
 
     if (data === 'GM_START') {
       const g = ensureSession(ctx);
@@ -619,7 +639,8 @@ bot.on('callback_query', async (ctx, next) => {
         data === 'GM_EASE_BODY' ? 'Хорошо. Пусть тело запомнит это чуть-чуть.' :
         data === 'GM_EASE_HEAD' ? 'Хорошо. Пусть в голове станет на полтона тише.' :
         'Это тоже нормально. Ты всё равно сделала маленький шаг.';
-      await ctx.reply([tail, '', 'Хочешь ещё одну короткую опору — или закончить?'].join('\n'),
+      await ctx.reply(
+        [tail, '', 'Хочешь ещё одну короткую опору — или закончить?'].join('\n'),
         guidedKeyboard([
           { text: '🔁 Ещё', data: 'GM_MORE' },
           { text: '✅ Закончить', data: 'GM_END' }
@@ -631,6 +652,7 @@ bot.on('callback_query', async (ctx, next) => {
     return;
   }
 
+  // SupportMoment callbacks
   const handled = await handleSupportMomentAction(ctx);
   if (handled) return;
 
@@ -638,13 +660,13 @@ bot.on('callback_query', async (ctx, next) => {
 });
 
 /* ============================================================================
-   text routing
+   text routing (единый обработчик, без дублей)
 ============================================================================ */
 
-bot.on('text', async (ctx, next) => {
-  await ensureUser(ctx);
+bot.on('text', async (ctx) => {
+  const user = await ensureUser(ctx);
 
-  // ✅ 54-ФЗ: ловим email, если его ждём
+  // 1) 54-ФЗ email step
   const pay = ensurePaySession(ctx);
   if (pay.awaitingEmail) {
     const email = String(ctx.message.text || '').trim();
@@ -657,7 +679,6 @@ bot.on('text', async (ctx, next) => {
     pay.email = email;
     pay.awaitingEmail = false;
 
-    // ✅ Вот то самое: кнопка внизу сообщения
     await ctx.reply(
       'Принято ✅\nТеперь нажми «✅ Создать подписку» — я создам ссылку на оплату.',
       payActionKeyboard
@@ -665,20 +686,15 @@ bot.on('text', async (ctx, next) => {
     return;
   }
 
-  const handled = await guidedHandleText(ctx);
-  if (handled) return;
+  // 2) Guided flow text
+  const guidedHandled = await guidedHandleText(ctx);
+  if (guidedHandled) return;
 
-  return next();
-});
+  // 3) SupportMoment text
+  const supportHandled = await handleSupportMomentText(ctx);
+  if (supportHandled) return;
 
-bot.on('text', async (ctx, next) => {
-  const handled = await handleSupportMomentText(ctx);
-  if (handled) return;
-  return next();
-});
-
-bot.on('text', async (ctx) => {
-  const user = await ensureUser(ctx);
+  // 4) General quick intents
   const t = normalize(ctx.message.text);
 
   const fast = ['тяжело', 'пусто', 'не вывожу', 'плохо', 'устала', 'страшно', 'тревожно', 'одиноко', 'больно'];
@@ -692,7 +708,10 @@ bot.on('text', async (ctx) => {
 
   if (fast.includes(t)) {
     if (t === 'тяжело' || t === 'плохо' || t === 'устала') incHeavyEvenings(user.user_id);
-    await ctx.reply('Вижу.\nЕсли нужно прямо сейчас — нажми «Поддержка в моменте».\nЕсли хочется шаг за шагом — /moment.\nЯ рядом.', mainMenu);
+    await ctx.reply(
+      'Вижу.\nЕсли нужно прямо сейчас — нажми «Поддержка в моменте».\nЕсли хочется шаг за шагом — /moment.\nЯ рядом.',
+      mainMenu
+    );
     return;
   }
 
@@ -706,23 +725,40 @@ bot.on('text', async (ctx) => {
     return;
   }
 
-  await ctx.reply('Я здесь.\nЕсли нужно прямо сейчас — «Поддержка в моменте».\nЕсли нужно шаг за шагом — /moment.\nИли просто молчим рядом.', mainMenu);
+  await ctx.reply(
+    'Я здесь.\nЕсли нужно прямо сейчас — «Поддержка в моменте».\nЕсли нужно шаг за шагом — /moment.\nИли просто молчим рядом.',
+    mainMenu
+  );
 });
 
+/* ============================================================================
+   Launch
+============================================================================ */
+
 bot.launch()
-  .then(() => console.log('Bot started'))
+  .then(() => console.log('BOOT: bot launched'))
   .catch((e) => {
-    console.error('Bot launch failed:', e);
+    console.error('BOOT: bot launch failed:', e);
     process.exit(1);
   });
 
 // internal cron
-if (process.env.INTERNAL_CRON === '1') {
-  startInternalCron(bot);
+if (String(process.env.INTERNAL_CRON || '').trim() === '1') {
+  try {
+    startInternalCron(bot);
+    console.log('CRON: internal cron started');
+  } catch (e) {
+    console.error('CRON: internal cron failed:', e?.message || e);
+  }
 }
 
-// ✅ Запускаем HTTP сервер ВСЕГДА (он нужен для webhook и для домена Railway)
-startServer(bot);
+// ✅ Запускаем HTTP сервер ВСЕГДА (нужен Railway + YooKassa returnUrl/webhook, если используешь)
+try {
+  startServer(bot);
+  console.log('HTTP: server started');
+} catch (e) {
+  console.error('HTTP: server failed:', e?.message || e);
+}
 
 process.once('SIGINT', () => bot.stop('SIGINT'));
 process.once('SIGTERM', () => bot.stop('SIGTERM'));
